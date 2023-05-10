@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from types import SimpleNamespace
 from typing import List
@@ -43,10 +44,12 @@ class Seq2seqPrompting(torch.nn.Module):
         # select MLM probs of the masked positions, only for the label ids
         vocab_logits = trans_output.logits[:,-1]
         class_logits = vocab_logits[:, tuple(self.label_ids)]
+        raw_class_probs = F.softmax(vocab_logits, dim=-1)[:, tuple(self.label_ids)]
 
         return SimpleNamespace(
             logits=class_logits,
-            vocab_logits=vocab_logits
+            vocab_logits=vocab_logits,
+            raw_class_probs=raw_class_probs
         )
 
     @lru_cache(maxsize=3)

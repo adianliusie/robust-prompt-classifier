@@ -163,7 +163,7 @@ class Trainer(object):
         self.log_metrics(metrics = metrics, mode='dev')
         if wandb: self.log_wandb(metrics, mode= 'dev')
 
-        if metrics['select'] > self.best_dev[1].get('select', 0):
+        if metrics['loss'] < self.best_dev[1].get('loss', 100):
             self.best_dev = (f'{epoch}-{ex_step}', metrics.copy())
             self.save_model()
         

@@ -1,3 +1,6 @@
+
+ 
+
 import torch
 import torch.nn.functional as F
 
@@ -6,7 +9,7 @@ from typing import Tuple
 
 from .base import BaseLoss
 
-class CrossEntropyLoss(BaseLoss):
+class Seq2SeqCrossEntropyLoss(BaseLoss):
     def __init__(self, model):
         super().__init__()
         self.model = model
@@ -15,27 +18,29 @@ class CrossEntropyLoss(BaseLoss):
         output = self.model(
             input_ids = batch.input_ids, 
             attention_mask = batch.attention_mask, 
+            labels = batch.label_ids
         )
 
         # Cross entropy loss
-        logits = output.logits
-        loss = F.cross_entropy(logits, batch.labels)
+        loss = output.loss  
 
         # Masking out all non-labels
-        hits = torch.argmax(output.logits, dim=-1) == batch.labels
-        acc = hits.sum()/len(batch.labels)
+        mask = batch.label_ids != -100
 
-        #record training metrics
+        # Token level accuracy
+        x = (output.logits.argmax(dim = -1) == batch.label_ids)
+
+        # Masked Token level accuracy
+        acc = torch.masked_select(x, mask) 
+                
         self.record_metrics({
             'loss': loss.item(),
-            'acc': acc.item(),
-            'select': -1*loss.item()
+            'ce': loss.item(),
+            'acc': acc.sum() / mask.sum(),
         })
 
         return SimpleNamespace(
                     loss=loss, 
-                    logits=logits, 
-                    model_output=output
+                    logits=output.logits,
+                    model_output=output,
         )
-
-

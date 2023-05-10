@@ -2,7 +2,7 @@ from prompt_search import prompt_search_experiment
 
 if __name__ == '__main__':
     #== Set Exp arguments (beforehand) ============================================================#
-    datasets = ['sst', 'rt', 'imdb', 'amazon-s', 'yelp-s']
+    datasets = ['imdb', 'rt', 'amazon-s']
 
     templates = [
         'classify the following review: <t>',
@@ -23,5 +23,4 @@ if __name__ == '__main__':
         datasets=datasets, 
         templates=templates, 
         label_word_sets=label_word_sets, 
-        save_probs=False
     )

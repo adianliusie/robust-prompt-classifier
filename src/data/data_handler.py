@@ -97,6 +97,14 @@ class DataHandler:
         data = cls.load_data(data_name, lim)[split_index[mode]]
         return data
 
+    @classmethod
+    def load_labels(cls, dataset, mode:str='test', lim=None):
+        eval_data = cls.load_split(dataset, mode, lim)
+        labels_dict = {}
+        for ex in eval_data:
+            labels_dict[ex.ex_id] = ex.label
+        return labels_dict
+
 #== Misc utils functions ============================================================================#
 def rand_select(data:list, lim:None):
     if data is None: return None

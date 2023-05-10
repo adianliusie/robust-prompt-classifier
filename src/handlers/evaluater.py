@@ -109,10 +109,7 @@ class Evaluater(Trainer):
     #== general eval methods ======================================================================#
     @staticmethod
     def load_labels(dataset:str, mode:str='test', lim=None)->dict:
-        eval_data = DataHandler.load_split(dataset, mode, lim)
-        labels_dict = {}
-        for ex in eval_data:
-            labels_dict[ex.ex_id] = ex.label
+        labels_dict = DataHandler.load_labels(dataset, mode, lim)
         return labels_dict
 
     @staticmethod
