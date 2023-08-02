@@ -13,9 +13,10 @@ from copy import deepcopy
 
 from .batcher import Batcher
 from ..data.data_handler import DataHandler
-from ..models.pre_trained_trans import SEQ2SEQ_TRANSFORMERS, MLM_TRANSFORMERS
+from ..models.pre_trained_trans import MLM_TRANSFORMERS, DECODER_TRANSFORMERS, SEQ2SEQ_TRANSFORMERS
 from ..models.mlm_prompting import MlmPrompting
 from ..models.seq2seq_prompting import Seq2seqPrompting
+from ..models.decoder_prompting import DecoderPrompting
 from ..utils.general import save_json, load_json
 from ..utils.torch import set_rand_seed
 from ..loss.cross_entropy import CrossEntropyLoss
@@ -46,9 +47,11 @@ class Trainer(object):
         # set up model
         if args.transformer in MLM_TRANSFORMERS:
             self.model = MlmPrompting(trans_name=args.transformer, label_words=args.label_words)
+        elif args.transformer in DECODER_TRANSFORMERS:
+            self.model = DecoderPrompting(trans_name=args.transformer, label_words=args.label_words)
         elif args.transformer in SEQ2SEQ_TRANSFORMERS:
             self.model = Seq2seqPrompting(trans_name=args.transformer, label_words=args.label_words)
-
+        
         # select the loss function
         self.model_loss = CrossEntropyLoss(self.model)
 

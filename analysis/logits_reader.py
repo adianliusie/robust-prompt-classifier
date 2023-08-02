@@ -15,9 +15,11 @@ from types import SimpleNamespace
 
 from src.utils.general import load_pickle, load_json
 from src.models.seq2seq_prompting import Seq2seqPrompting
+from src.models.decoder_prompting import DecoderPrompting
 from src.loss.cross_entropy import CrossEntropyLoss
 from src.data.data_handler import DataHandler
 from src.handlers.batcher import Batcher
+from src.models.pre_trained_trans import MLM_TRANSFORMERS, DECODER_TRANSFORMERS, SEQ2SEQ_TRANSFORMERS
 
 class LogitsReader:
     def __init__(self, path, dataset):
@@ -32,6 +34,9 @@ class LogitsReader:
         labels = DataHandler.load_labels(dataset)
         self.keys = labels.keys()
         self.labels_np = np.array([labels[ex_id] for ex_id in self.keys])
+        if dataset in ['qqp', 'mrpc']:
+            print('initial error in qqp- switching labels')
+            self.labels_np  = 1 - self.labels_np
 
         # load logits
         logits_dict = load_pickle(os.path.join(self.path, 'logits.pk'))
@@ -47,20 +52,18 @@ class LogitsReader:
                  f"label words: {self.all_words}"
             )
             
-        logits = self.logits_np.copy()
-        if norm in ['log-norm', 'prob-norm', 'null-norm']:
-            logits, _ = self.get_normalised_logits(norm)
-                    
-        elif norm == 'N-optimal':
-            logits, _ = self.N_optimal_threshold()
-            
-        # get logits for specified label words
-        indices = [self.all_words.index(w) for w in label_words]
-        class_logits = logits[:,indices].copy()
+        if norm in [None, 'log-norm', 'prob-norm', 'clean-norm', 'null-norm']:
+            class_logits, _ = self.norm_class_logits(label_words=label_words, norm=norm)
         
-        if norm == 'optimal':
-            class_logits, _ = self.optimal_threshold(label_words)
+        elif norm == 'balanced':
+            class_logits, _ = self.balanced_alpha_logits(label_words=label_words)
 
+        elif norm == 'N-optimal':
+            class_logits, _ = self.N_optimal_threshold(label_words=label_words)
+            
+        elif norm == 'optimal':
+            class_logits, _ = self.optimal_threshold(label_words=label_words)
+        
         return class_logits
 
     def load_probs(self, label_words:list=None, norm:bool=False, annealing:bool=False)->np.ndarray:
@@ -93,10 +96,13 @@ class LogitsReader:
     #== Logits calibration methods =====================================================================#
     def anneal_logits(self, logits):
         pass
-        
-    def get_normalised_logits(self, norm:str):
-        logits = self.logits_np.copy()
-        if norm == 'log-norm':
+    
+    def norm_class_logits(self, label_words:list=None, norm:str=None):        
+        # get normalising values
+        if norm == None:
+            norm_values = 0
+            
+        elif norm == 'log-norm':
             norm_values = np.mean(self.logits_np, axis=0)  
             
         elif norm == 'prob-norm':
@@ -105,55 +111,87 @@ class LogitsReader:
             norm_prob_values = np.mean(prob_dict_np, axis=0)
             norm_values = np.log(norm_prob_values)
             
+        elif norm == 'clean-norm':
+            indices = [self.all_words.index(w) for w in label_words]
+
+            logits = self.logits_np.copy()
+            class_logits = logits[:, indices]
+            class_probs = scipy.special.softmax(class_logits, axis=-1) 
+
+            avg_clss_probs = np.mean(class_probs, axis=0)  
+            norm_values = np.zeros(len(self.all_words))
+            norm_values[indices] = np.log(avg_clss_probs)
+            
+            temp = class_logits - np.log(avg_clss_probs)
+            prob_temp = scipy.special.softmax(temp, axis=-1)
+
         elif norm == 'null-norm':
             norm_values = self.null_values
         
         else:
             raise ValueError(f"invalid normalisation method: {norm}")
-            
-        logits -= norm_values
-        return logits, norm_values
+                
+        # get class logits
+        if label_words == None:
+            class_logits = None
+        else:
+            logits = self.logits_np.copy()
+            logits -= norm_values
+            indices = [self.all_words.index(w) for w in label_words]
+            class_logits = logits[:,indices].copy()
+
+        return class_logits, norm_values        
+
+    def balanced_alpha_logits(self, label_words):        
+        # get class logits
+        logits = self.logits_np.copy()
+        indices = [self.all_words.index(w) for w in label_words]
+        class_logits = logits[:,indices].copy()
+        
+        if self.num_classes == 2:
+            search_range = np.arange(-20,20,0.1)
+        else:
+            search_range = np.arange(-15,15,0.5)
+
+        class_ranges = [search_range for i in range(self.num_classes-1)]
+        alphas_perm = list(itertools.product(*class_ranges))
+        
+        # initialise best performance to Null
+        best = (None, 1)
+
+        for thresholds in alphas_perm:
+            thresh_logits = class_logits.copy()
+            # update logits with current threshold
+            for k, t in enumerate(thresholds):
+                thresh_logits[:, k] -= t
+                
+            probs = scipy.special.softmax(thresh_logits, axis=-1)   
+            avg_class_probs = np.mean(probs, axis=0)
+            dist = np.mean(np.abs(avg_class_probs - np.ones_like(avg_class_probs)/self.num_classes))
+            if dist < best[1]:
+                best = (thresholds, dist)
+        
+        # update logits accordingly
+        thresholds = best[0]
+        for k, t in enumerate(thresholds):
+            class_logits[:, k] -= t
+
+        return class_logits, best
+        
+    def optimal_N_logits(self, label_words:list=None):
+        norm_values = self.N_optimal_threshold()
+        
+        # get class logits
+        if label_words == None:
+            class_logits = None
+        else:
+            logits = self.logits_np.copy()
+            logits -= norm_values
+            indices = [self.all_words.index(w) for w in label_words]
+            class_logits = logits[:,indices].copy()
+
+        return class_logits, norm_values
     
-    @property
-    def null_values(self):
-        if not hasattr(self, '_null_values'):
-            with torch.no_grad():
-                # Set up Model and Datahandler
-                model = Seq2seqPrompting(trans_name=self.model_name, label_words=self.all_words)
-                model_loss = CrossEntropyLoss(model)
-                data_handler = DataHandler(trans_name=self.model_name, template=self.prompt)
-                batcher = Batcher(max_len=512)
-
-                # crete null example
-                ex = SimpleNamespace(
-                    ex_id='1',
-                    text='text',
-                    text_1='text_1',
-                    text_2='text_2',
-                    label=0
-                )
-                
-                """
-                ex = SimpleNamespace(
-                    ex_id='',
-                    text='',
-                    text_1='',
-                    text_2='',
-                    label=0
-                )
-                """
-                
-                # determine output logits for null input
-                ex_data = data_handler._prep_ids([ex])
-                ex_batch = batcher(data=ex_data, bsz=1, shuffle=False)
-                output = model_loss(ex_batch[0])
-                base_logits = output.logits.squeeze(0).numpy()
-
-                # cache output
-                self._null_values = base_logits
-            
-        return self._null_values
-
     @lru_cache(maxsize=10)
     def N_optimal_threshold(self):
         logits = self.logits_np.copy()
@@ -187,18 +225,54 @@ class LogitsReader:
             optimizer.step()
                         
         norm_values = biases[0].detach().numpy()
-        logits -= norm_values
-        return logits, norm_values
+        return norm_values
         
     def optimal_threshold(self, label_words):
         """wrapper function to turn input to string (for lru_cache)"""
         joined_label_words = '_'.join(label_words)
         class_logits, best = self._optimal_threshold(joined_label_words)
         return class_logits, best
-    
+
     @lru_cache(maxsize=10)
-    def _optimal_threshold(self, label_words):
-        label_words = label_words.split('_')
+    def _optimal_threshold(self, joined_label_words:str):
+        label_words = joined_label_words.split('_')
+        logits = self.logits_np.copy()
+        indices = [self.all_words.index(w) for w in label_words]
+        class_logits = logits[:,indices].copy()
+        
+        if self.num_classes == 2:
+            search_range = np.arange(-20,20,0.1)
+        else:
+            search_range = np.arange(-15,15,0.5)
+
+        class_ranges = [search_range for i in range(self.num_classes-1)]
+        alphas_perm = list(itertools.product(*class_ranges))
+        
+        best = (None, 0)
+
+        for thresholds in alphas_perm:
+            # check performance for current threshold
+            thresh_logits = class_logits.copy()
+            for k, t in enumerate(thresholds):
+                thresh_logits[:, k] -= t
+            
+            pred = np.argmax(thresh_logits, axis=-1)
+            acc = sum(pred == self.labels_np)/len(self.labels_np)
+
+            # after the search get best operating performance
+            if acc > best[1]:
+                best = (thresholds, acc)
+
+        # update logits accordingly
+        thresholds = best[0]
+        for k, t in enumerate(thresholds):
+            class_logits[:, k] -= t
+
+        return class_logits, best
+        
+    @lru_cache(maxsize=10)
+    def _optimal_threshold_old(self, joined_label_words:str):
+        label_words = joined_label_words.split('_')
         logits = self.logits_np.copy()
         indices = [self.all_words.index(w) for w in label_words]
         class_logits = logits[:,indices].copy()
@@ -242,6 +316,49 @@ class LogitsReader:
 
         return class_logits, best
     
+    @property
+    def null_values(self):
+        if not hasattr(self, '_null_values'):
+            with torch.no_grad():
+                # Set up Model and Datahandler
+                if self.model_name in SEQ2SEQ_TRANSFORMERS:
+                    model = Seq2seqPrompting(trans_name=self.model_name, label_words=self.all_words)
+                elif self.model_name in DECODER_TRANSFORMERS:
+                    model = DecoderPrompting(trans_name=self.model_name, label_words=self.all_words)
+                model_loss = CrossEntropyLoss(model)
+                data_handler = DataHandler(trans_name=self.model_name, template=self.prompt)
+                batcher = Batcher(max_len=512)
+
+                # crete null example
+                """
+                ex = SimpleNamespace(
+                    ex_id='1',
+                    text='text',
+                    text_1='text_1',
+                    text_2='text_2',
+                    label=0
+                )
+                
+                """
+                ex = SimpleNamespace(
+                    ex_id='',
+                    text='',
+                    text_1='',
+                    text_2='',
+                    label=0
+                )
+                
+                # determine output logits for null input
+                ex_data = data_handler._prep_ids([ex])
+                ex_batch = batcher(data=ex_data, bsz=1, shuffle=False)
+                output = model_loss(ex_batch[0])
+                base_logits = output.logits.squeeze(0).numpy()
+
+                # cache output
+                self._null_values = base_logits
+            
+        return self._null_values
+
     #== Plotting Methods ================================================================================#
     def plot_conf_acc_curve(self, label_words:list=None, norm:bool=False, num_bins=10, **kwargs):
         probs = self.load_probs(label_words=label_words, norm=norm)
@@ -278,14 +395,14 @@ class LogitsReader:
         label_word_sets = self.get_label_word_sets()
         output = []
         index_permutations = list(itertools.product(*label_word_sets))
-        for word_set in index_permutations:
+        for word_set in tqdm(index_permutations):
             for norm, name in zip(
                 #[None, 'log-norm', 'prob-norm', 'N-optimal', 'optimal'],
                 #['standard', 'geometric', 'normalised', 'N-optimal', 'optimal']
-                #[None, 'null-norm', 'log-norm', 'optimal'],
-                #['baseline', 'null-norm', 'marginalise-norm', 'optimal thresholds']   
-                ['null-norm'],
-                ['null-norm']   
+                [None, 'null-norm', 'balanced', 'optimal'],
+                ['baseline', 'null-norm', 'prior-match', 'optimal']   
+                #[None, 'log-norm', 'balanced'],
+                #['baseline', 'log-norm', 'balanced']   
             ):
                 label_words = [self.all_words[index] for index in word_set]
                 acc = self.calc_acc(label_words=label_words, norm=norm)
@@ -299,10 +416,7 @@ class LogitsReader:
     
     def threshold_plot(self):
         assert self.num_classes == 2, "only implemented for sentiment classification"
-        
-        #get original logits
-        logits = self.logits_np.copy()
-        
+
         # loop over all word set permutations
         label_word_sets = self.get_label_word_sets()
         index_permutations = list(itertools.product(*label_word_sets))  
@@ -317,17 +431,23 @@ class LogitsReader:
             class_logits, (opt_t, acc) = self.optimal_threshold(label_words)
  
             # normalised_null
-            logits, norm_values = self.get_normalised_logits(norm='null-norm')
-            norm_null_t = norm_values[i2] - norm_values[i1]
-                  
+            #_, norm_values = self.norm_class_logits(norm='null-norm')
+            norm_null_t = self.null_values[i1] - self.null_values[i2]
+               
+            # clean norm
+            #_, norm_values = self.norm_class_logits(label_words=label_words, norm='clean-norm')
+            #norm_null_t = norm_values[i2] - norm_values[i1]
+    
             # normalised_marg 
-            logits, norm_values = self.get_normalised_logits(norm='log-norm')
-            norm_t = norm_values[i2] - norm_values[i1]
-                  
+            #_, norm_values = self.norm_class_logits(norm='log-norm')
+            #norm_t = norm_values[i2] - norm_values[i1]
+       
+            # balanced
+            _, (norm_t, acc) = self.balanced_alpha_logits(label_words=label_words)
+             
             thresholds_norm.append(norm_t)
             thresholds_norm_null.append(norm_null_t)
             thresholds_opt.append(opt_t)
-        
         
         #scatter plot
         fig, ax = plt.subplots(figsize=(6,5.5))
@@ -345,9 +465,12 @@ class LogitsReader:
         # format plot
         plt.xscale('log')
         plt.yscale('log')
-        plt.xlabel(r'$\frac{P_{\theta}(w_1|p)}{P_{\theta}(w_2|p)}$', size=18)
-        plt.ylabel(r'$\tau_{optimal}$', size=18)
-        plt.legend(['marg-norm', 'null-norm'])
+        #plt.xlabel(r'$\frac{P_{\theta}(w_1|p)}{P_{\theta}(w_2|p)}$', size=18)
+        #plt.ylabel(r'$\tau_{optimal}$', size=18)
+        #plt.legend(['marg-norm', 'null-norm'])
+        plt.xlabel(r'$\alpha$', size=18)
+        plt.ylabel(r'$\alpha*$', size=18)
+        plt.legend(['prior-match', 'null-norm'])
         
     #== Util Methods ==================================================================================#
     def get_label_word_sets(self)->List[List[int]]:

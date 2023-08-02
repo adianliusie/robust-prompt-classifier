@@ -1,6 +1,7 @@
 from transformers import ElectraModel, BertModel, BertConfig, RobertaModel, DebertaModel, AutoModel, LongformerModel 
-from transformers import AutoModelForSeq2SeqLM
+from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM
 from transformers import BertForMaskedLM, RobertaForMaskedLM, DebertaForMaskedLM
+from transformers import AutoTokenizer, GPTNeoForCausalLM
 
 MLM_TRANSFORMERS = ['bert-base', 'bert-rand', 'bert-large', 'roberta-base', 'roberta-large', 'deberta-base', 'deberta-large', 'deberta-xl']
 def load_MLM_transformer(system:str)->AutoModel:
@@ -13,6 +14,14 @@ def load_MLM_transformer(system:str)->AutoModel:
     elif system == 'deberta-base'  : trans_model = DebertaForMaskedLM.from_pretrained("microsoft/deberta-base", return_dict=True)
     elif system == 'deberta-large' : trans_model = DebertaForMaskedLM.from_pretrained("microsoft/deberta-large", return_dict=True)
     elif system == 'deberta-xl'    : trans_model = DebertaForMaskedLM.from_pretrained("microsoft/deberta-xlarge", return_dict=True)
+    else: raise ValueError(f"invalid transfomer system provided: {system}")
+    return trans_model
+
+DECODER_TRANSFORMERS = ['llama-7b', 'alpaca-7b', 'opt-iml-1.3b']
+def load_decoder_transformer(system:str)->AutoModel:
+    if   system == 'llama-7b'    : trans_model = AutoModelForCausalLM.from_pretrained("decapoda-research/llama-7b-hf")
+    elif system == 'alpaca-7b'   : trans_model = AutoModelForCausalLM.from_pretrained("chainyo/alpaca-lora-7b")
+    elif system == 'opt-iml-1.3b': trans_model = AutoModelForCausalLM.from_pretrained("facebook/opt-iml-1.3b")
     else: raise ValueError(f"invalid transfomer system provided: {system}")
     return trans_model
 
